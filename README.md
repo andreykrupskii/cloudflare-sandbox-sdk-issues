@@ -2,7 +2,7 @@
 
 Minimal reproduction for **cloudflare/sandbox-sdk#794**.
 
-A Worker exposes a small authenticated JSON-RPC API (mirroring our production setup) with four
+A Worker exposes a small authenticated JSON-RPC API with four
 methods: `create_workspace`, `bash`, `snapshot_workspace`, `destroy_workspace`. A client script
 fires **N `create_workspace` calls concurrently**. A share of them fail with:
 
@@ -26,6 +26,7 @@ container stuck in the **Running** state that is never torn down.
 
 ## Prerequisites
 
+- Node 20.12+.
 - A Cloudflare account with Containers enabled.
 - Docker running locally (wrangler builds the image on deploy).
 - `wrangler` authenticated: `npx wrangler login`.

@@ -14,28 +14,21 @@
 // Config + auth come from .env (WORKER_URL, REPRO_SECRET).
 // Run:  node scripts/repro.mjs [count=10]
 
-import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { SignJWT } from 'jose';
 
 const COUNT = Number(process.argv[2] ?? 10);
 
 // --- config + auth -------------------------------------------------------------------
 
-function loadEnv() {
-  const env = Object.fromEntries(
-    readFileSync(new URL('../.env', import.meta.url), 'utf8')
-      .split('\n')
-      .map((line) => line.match(/^\s*([A-Z0-9_]+)\s*=\s*(.*?)\s*$/))
-      .filter(Boolean)
-      .map((m) => [m[1], m[2].replace(/^["']|["']$/g, '')]),
-  );
-  if (!env.WORKER_URL || !env.REPRO_SECRET) {
-    throw new Error('set WORKER_URL and REPRO_SECRET in .env (copy .env.example)');
-  }
-  return env;
-}
+// Load the sibling .env into process.env (Node's built-in loader).
+const dotenvPath = fileURLToPath(new URL('../.env', import.meta.url));
+process.loadEnvFile(dotenvPath);
 
-const { WORKER_URL, REPRO_SECRET } = loadEnv();
+const { WORKER_URL, REPRO_SECRET } = process.env;
+if (!WORKER_URL || !REPRO_SECRET) {
+  throw new Error('set WORKER_URL and REPRO_SECRET in .env (copy .env.example)');
+}
 
 // Short-lived HS256 bearer the Worker verifies — iss/aud must match src/index.ts.
 function mintToken() {
