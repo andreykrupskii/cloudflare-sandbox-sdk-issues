@@ -1,0 +1,20 @@
+{
+  "name": "sandbox-sdk-issue-794",
+  "description": "Minimal reproduction: concurrent sandbox creation fails and leaks Running containers (cloudflare/sandbox-sdk#794)",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "deploy": "wrangler deploy",
+    "repro": "node scripts/repro.mjs",
+    "tsc": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@cloudflare/sandbox": "0.12.2",
+    "jose": "6.2.3"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "4.20260601.1",
+    "typescript": "5.9.3",
+    "wrangler": "4.95.0"
+  }
+}

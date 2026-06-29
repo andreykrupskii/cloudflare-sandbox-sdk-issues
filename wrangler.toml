@@ -1,0 +1,36 @@
+name = "sandbox-sdk-issue-794"
+main = "src/index.ts"
+compatibility_date = "2026-06-01"
+compatibility_flags = ["nodejs_compat"]
+
+# Matches how @cloudflare/sandbox is run in production (streaming-capable transport).
+[vars]
+SANDBOX_TRANSPORT = "rpc"
+
+# Container-backed Durable Object. `instance_type = basic` (1/4 vCPU, 1 GiB) and a low
+# `max_instances` keep the repro nowhere near any account cap — the failure is about
+# *concurrent starts*, not capacity.
+[[containers]]
+class_name = "Sandbox"
+image = "./Dockerfile"
+instance_type = "basic"
+max_instances = 10
+
+[[durable_objects.bindings]]
+class_name = "Sandbox"
+name = "Sandbox"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["Sandbox"]
+
+# The Sandbox SDK writes snapshots here when createBackup({ localBucket: true }) is used
+# (snapshot_workspace / create_workspace with a snapshotId). The binding name MUST be
+# BACKUP_BUCKET — the SDK looks it up by that name. Create it once:
+#   npx wrangler r2 bucket create sandbox-sdk-issue-794-backups
+[[r2_buckets]]
+binding = "BACKUP_BUCKET"
+bucket_name = "sandbox-sdk-issue-794-backups"
+
+[observability]
+enabled = true
