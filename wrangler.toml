@@ -14,7 +14,7 @@ SANDBOX_TRANSPORT = "rpc"
 class_name = "Sandbox"
 image = "./Dockerfile"
 instance_type = "basic"
-max_instances = 10
+max_instances = 100
 
 [[durable_objects.bindings]]
 class_name = "Sandbox"
@@ -34,3 +34,6 @@ bucket_name = "sandbox-sdk-issue-794-backups"
 
 [observability]
 enabled = true
+# Persisted traces surface the *real* per-request failure (e.g. "there is no container instance
+# that can be provided to this durable object"). Group by run_id / run_instance_id in the trace UI.
+traces = { enabled = true, persist = true }

@@ -11,9 +11,14 @@
 // "RPC session was shut down by disposing the main stub", and some failures leave a
 // container stuck in the Running state.
 //
+// Every call carries a run_id (one per repro run) and a run_instance_id (one per sandbox
+// lifecycle). With `traces` enabled on the Worker, use these to find the failing request's
+// trace — which now reports the real underlying error.
+//
 // Config + auth come from .env (WORKER_URL, REPRO_SECRET).
 // Run:  node scripts/repro.mjs [count=10]
 
+import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { SignJWT } from 'jose';
 
@@ -30,6 +35,11 @@ if (!WORKER_URL || !REPRO_SECRET) {
   throw new Error('set WORKER_URL and REPRO_SECRET in .env (copy .env.example)');
 }
 
+// One id for the whole run; a fresh instance id is minted per sandbox lifecycle (the setup
+// workspace, and each concurrent create). Both are attached to every RPC so the resulting
+// spans can be grouped in the trace UI.
+const RUN_ID = randomUUID();
+
 // Short-lived HS256 bearer the Worker verifies — iss/aud must match src/index.ts.
 function mintToken() {
   return new SignJWT({})
@@ -42,78 +52,94 @@ function mintToken() {
 }
 
 // One JSON-RPC call; throws on a non-200 so callers can rely on the result.
-async function rpc(method, params = {}) {
+async function rpc(method, params = {}, runInstanceId) {
   const token = await mintToken();
   const res = await fetch(WORKER_URL, {
     method: 'POST',
     headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
-    body: JSON.stringify({ method, params }),
+    body: JSON.stringify({ method, params, runId: RUN_ID, runInstanceId }),
   });
-  const body = await res.json().catch(() => ({}));
+  const text = await res.text();
+  let body;
+  try { body = JSON.parse(text); } catch { body = { text }; }
   if (res.status !== 200) {
-    throw new Error(body.error ?? `http ${res.status}`);
+    throw new Error(body.error ?? `http ${res.status}: ${text}`);
   }
   return body;
 }
 
 // --- one function per RPC method -----------------------------------------------------
 
-async function createWorkspace(snapshotId) {
-  const { workspaceId } = await rpc('create_workspace', snapshotId ? { snapshotId } : {});
+async function createWorkspace(snapshotId, runInstanceId) {
+  const { workspaceId } = await rpc('create_workspace', snapshotId ? { snapshotId } : {}, runInstanceId);
   return workspaceId;
 }
 
-function writeFile(workspaceId, path, content) {
-  return rpc('bash', { workspaceId, command: `echo ${JSON.stringify(content)} > ${path}` });
+function writeFile(workspaceId, path, content, runInstanceId) {
+  return rpc('bash', { workspaceId, command: `echo ${JSON.stringify(content)} > ${path}` }, runInstanceId);
 }
 
-async function snapshotWorkspace(workspaceId) {
-  const { snapshotId } = await rpc('snapshot_workspace', { workspaceId });
+async function snapshotWorkspace(workspaceId, runInstanceId) {
+  const { snapshotId } = await rpc('snapshot_workspace', { workspaceId }, runInstanceId);
   return snapshotId;
 }
 
-function destroyWorkspace(workspaceId) {
-  return rpc('destroy_workspace', { workspaceId });
+function destroyWorkspace(workspaceId, runInstanceId) {
+  return rpc('destroy_workspace', { workspaceId }, runInstanceId);
 }
 
-// Fire `count` create_workspace({ snapshotId }) calls at once. Never throws — records each outcome.
+// Fire `count` create_workspace({ snapshotId }) calls at once. Never throws — records each
+// outcome with its instance id and start/end timing (failures return notably faster).
 function createManyFromSnapshot(snapshotId, count) {
-  const attempts = Array.from({ length: count }, (_, i) =>
-    createWorkspace(snapshotId).then(
-      (workspaceId) => ({ i, ok: true, workspaceId }),
-      (err) => ({ i, ok: false, error: err.message }),
-    ),
-  );
+  const t0 = Date.now();
+  const attempts = Array.from({ length: count }, (_, i) => {
+    const start = Date.now() - t0;
+    const runInstanceId = randomUUID();
+    return createWorkspace(snapshotId, runInstanceId).then(
+      (workspaceId) => ({ i, ok: true, workspaceId, runInstanceId, start, end: Date.now() - t0 }),
+      (err) => ({ i, ok: false, error: err.message, runInstanceId, start, end: Date.now() - t0 }),
+    );
+  });
   return Promise.all(attempts);
 }
 
 // --- scenario ------------------------------------------------------------------------
 
 async function main() {
-  console.log(`worker: ${new URL(WORKER_URL).host}\n`);
+  console.log(`worker:  ${new URL(WORKER_URL).host}`);
+  console.log(`run_id:  ${RUN_ID}\n`);
+
+  // The setup workspace gets its own instance id, distinct from the N creates.
+  const setupInstanceId = randomUUID();
 
   console.log('1. create workspace');
-  const workspaceId = await createWorkspace();
+  const workspaceId = await createWorkspace(undefined, setupInstanceId);
   console.log(`   -> ${workspaceId}`);
 
   console.log('2. write file');
-  await writeFile(workspaceId, '/workspace/hello.txt', 'hello from the repro');
+  await writeFile(workspaceId, '/workspace/hello.txt', 'hello from the repro', setupInstanceId);
 
   console.log('3. snapshot');
-  const snapshotId = await snapshotWorkspace(workspaceId);
+  const snapshotId = await snapshotWorkspace(workspaceId, setupInstanceId);
   console.log(`   -> ${snapshotId}`);
 
   console.log('4. destroy original workspace');
-  await destroyWorkspace(workspaceId);
+  await destroyWorkspace(workspaceId, setupInstanceId);
 
   console.log(`5. create ${COUNT} workspaces from the snapshot, concurrently`);
   const results = (await createManyFromSnapshot(snapshotId, COUNT)).sort((a, b) => a.i - b.i);
   for (const r of results) {
-    console.log(`   [${String(r.i).padStart(2, '0')}] ${r.ok ? 'OK  ' : 'FAIL'} ${r.ok ? r.workspaceId : r.error}`);
+    const index = String(r.i).padStart(2, '0');
+    if (r.ok) {
+      console.log(`   [${index}] OK   start=+${r.start}ms end=+${r.end}ms run_instance_id=${r.runInstanceId} workspaceId=${r.workspaceId}`);
+    } else {
+      console.log(`   [${index}] FAIL start=+${r.start}ms end=+${r.end}ms run_instance_id=${r.runInstanceId} ${r.error}`);
+    }
   }
 
   const created = results.filter((r) => r.ok).map((r) => r.workspaceId);
-  console.log(`\n${created.length}/${COUNT} ok · ${COUNT - created.length} failed`);
+  console.log(`\n---- summary: ${created.length}/${COUNT} ok · ${COUNT - created.length}/${COUNT} failed ----`);
+  console.log(`run_id: ${RUN_ID}`);
   if (created.length) {
     console.log(`created (still running): ${created.join(' ')}`);
   }

@@ -9,12 +9,12 @@
     "tsc": "tsc --noEmit"
   },
   "dependencies": {
-    "@cloudflare/sandbox": "0.12.2",
+    "@cloudflare/sandbox": "https://pkg.pr.new/@cloudflare/sandbox@799",
     "jose": "6.2.3"
   },
   "devDependencies": {
-    "@cloudflare/workers-types": "4.20260601.1",
+    "@cloudflare/workers-types": "4.20260702.1",
     "typescript": "5.9.3",
-    "wrangler": "4.95.0"
+    "wrangler": "4.105.0"
   }
 }
