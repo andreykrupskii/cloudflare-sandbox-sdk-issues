@@ -61,9 +61,15 @@ async function rpc(method, params = {}, runInstanceId) {
   });
   const text = await res.text();
   let body;
-  try { body = JSON.parse(text); } catch { body = { text }; }
+  // A transient non-JSON response (e.g. the Workers "nothing here yet" 404 page during a deploy
+  // rollout) would otherwise dump a full HTML document into the output — keep it to a short slug.
+  try { body = JSON.parse(text); } catch { body = { text: text.slice(0, 200) }; }
   if (res.status !== 200) {
-    throw new Error(body.error ?? `http ${res.status}: ${text}`);
+    const err = new Error(body.error ?? `http ${res.status}: ${body.text}`);
+    // Carry the SDK's full error context (when the Worker forwards it) so the caller can report
+    // the exact cause of a failure — container exit code, stop reason, phase, retryable, etc.
+    if (body.context) err.context = body.context;
+    throw err;
   }
   return body;
 }
@@ -97,7 +103,7 @@ function createManyFromSnapshot(snapshotId, count) {
     const runInstanceId = randomUUID();
     return createWorkspace(snapshotId, runInstanceId).then(
       (workspaceId) => ({ i, ok: true, workspaceId, runInstanceId, start, end: Date.now() - t0 }),
-      (err) => ({ i, ok: false, error: err.message, runInstanceId, start, end: Date.now() - t0 }),
+      (err) => ({ i, ok: false, error: err.message, context: err.context, runInstanceId, start, end: Date.now() - t0 }),
     );
   });
   return Promise.all(attempts);
@@ -133,7 +139,8 @@ async function main() {
     if (r.ok) {
       console.log(`   [${index}] OK   start=+${r.start}ms end=+${r.end}ms run_instance_id=${r.runInstanceId} workspaceId=${r.workspaceId}`);
     } else {
-      console.log(`   [${index}] FAIL start=+${r.start}ms end=+${r.end}ms run_instance_id=${r.runInstanceId} ${r.error}`);
+      const ctx = r.context ? ` context=${JSON.stringify(r.context)}` : '';
+      console.log(`   [${index}] FAIL start=+${r.start}ms end=+${r.end}ms run_instance_id=${r.runInstanceId} ${r.error}${ctx}`);
     }
   }
 

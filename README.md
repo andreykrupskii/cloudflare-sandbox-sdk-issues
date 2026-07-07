@@ -32,6 +32,14 @@ container stuck in the **Running** state that is never torn down.
   `there is no container instance that can be provided to this durable object`) instead of the
   generic `RPC session was shut down by disposing the main stub`. A failed `create_workspace` also
   now tears its half-started container down (`sandbox.destroy.cleanup` span) to avoid the leak.
+- **Error context** — the SDK stamps a structured `context` on its errors; PR #799 (commit
+  `f553148`) adds the platform's container exit code and stop reason to it when a container dies
+  mid-operation. The Worker forwards the whole `context` rather than cherry-picking fields: it
+  JSON-stamps it on the span as `error.context` and promotes each primitive to a filterable `ctx.*`
+  attribute, and the client prints it on `FAIL` lines as `context={...}` — e.g.
+  `"containerExitCode":137,"stopReason":"runtime_signal"` for an OOM kill, `143` for a signalled
+  eviction, `0` / `"exit"` for a clean exit. This is what distinguishes an evicted/killed container
+  from a clean exit.
 
 ## Prerequisites
 
@@ -87,7 +95,7 @@ run_id:  e31a3293-…
    [00] OK   start=+0ms end=+3275ms run_instance_id=e1548591-… workspaceId=47b30a72-…
    [02] FAIL start=+1ms end=+28139ms run_instance_id=f83ce5bb-… there is no container instance that can be provided to this durable object
    [03] OK   start=+2ms end=+9941ms run_instance_id=c614ab51-… workspaceId=cc209571-…
-   [08] FAIL start=+6ms end=+18368ms run_instance_id=91343c7e-… The sandbox container stopped while the operation was pending.
+   [08] FAIL start=+6ms end=+18368ms run_instance_id=91343c7e-… The sandbox container stopped while the operation was pending. context={"reason":"runtime_replaced","retryable":true,"containerExitCode":137,"stopReason":"runtime_signal"}
    ...
 
 ---- summary: 7/10 ok · 3/10 failed ----

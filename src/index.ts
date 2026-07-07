@@ -59,6 +59,19 @@ const tagRun = (span: Span, run: RunContext): void => {
   span.setAttribute('run_instance_id', run.runInstanceId);
 };
 
+// The SDK stamps a structured `context` on its errors; PR #799 (commit f553148) added the
+// platform's container exit code + stop reason to it when a container dies mid-operation (e.g.
+// containerExitCode 137 = OOM kill, 143 / stopReason 'runtime_signal' = signalled eviction,
+// 0 / 'exit' = clean exit). Grab the whole object rather than cherry-picking fields — the shape can
+// grow and everything in it (reason, phase, retryable, ...) is useful for diagnosis. Read it
+// structurally: the error crosses the DO RPC boundary (so `instanceof` won't hold) and the context
+// may sit on the error itself or on a wrapped `cause`.
+const errorContext = (error: unknown): Record<string, unknown> | undefined => {
+  const e = error as { context?: unknown; cause?: { context?: unknown } };
+  const ctx = e?.context ?? e?.cause?.context;
+  return ctx && typeof ctx === 'object' ? (ctx as Record<string, unknown>) : undefined;
+};
+
 // Rebuild a DirectoryBackup handle from the SDK-written sidecar at `backups/{id}/meta.json`,
 // so a caller can pass back a plain `snapshotId` string. `localBucket: true` is re-asserted
 // here (the SDK doesn't store that flag in the sidecar, but every snapshot uses it).
@@ -102,6 +115,18 @@ const dispatch = async (req: RpcRequest, env: Env): Promise<unknown> => {
           );
           span.setAttribute('error', String(error));
           if (error instanceof Error) span.setAttribute('error.stack', error.stack);
+          // Attach the SDK's full error context so the trace names the actual cause. The whole
+          // object goes on one attribute; each primitive field is also promoted to its own `ctx.*`
+          // attribute so it stays filterable in the trace UI (container exit code, stop reason, ...).
+          const ctx = errorContext(error);
+          if (ctx) {
+            span.setAttribute('error.context', JSON.stringify(ctx));
+            for (const [key, value] of Object.entries(ctx)) {
+              if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
+                span.setAttribute(`ctx.${key}`, value);
+              }
+            }
+          }
           throw error;
         }
       });
@@ -165,7 +190,16 @@ export default {
     try {
       return json(await dispatch(await request.json<RpcRequest>(), env));
     } catch (err) {
-      return json({ error: err instanceof Error ? err.message : String(err) }, 500);
+      // Forward the SDK's full error context (when present) so the client can print the exact
+      // cause alongside the generic message.
+      const ctx = errorContext(err);
+      return json(
+        {
+          error: err instanceof Error ? err.message : String(err),
+          ...(ctx && { context: ctx }),
+        },
+        500,
+      );
     }
   },
 };

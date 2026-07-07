@@ -6,6 +6,11 @@ compatibility_flags = ["nodejs_compat"]
 # Matches how @cloudflare/sandbox is run in production (streaming-capable transport).
 [vars]
 SANDBOX_TRANSPORT = "rpc"
+# The container exit code / stop reason live only inside the Sandbox DO, and the SDK records them
+# via a debug-level log in onStop() ("Sandbox stopped", { exitCode, reason }). The default level is
+# "info", which suppresses it. Set debug so that log fires; read it via `wrangler tail` or Workers
+# Logs (it is NOT on the error that reaches the Worker: DO->Worker RPC strips the error's context).
+SANDBOX_LOG_LEVEL = "debug"
 
 # Container-backed Durable Object. `instance_type = basic` (1/4 vCPU, 1 GiB) and a low
 # `max_instances` keep the repro nowhere near any account cap — the failure is about
